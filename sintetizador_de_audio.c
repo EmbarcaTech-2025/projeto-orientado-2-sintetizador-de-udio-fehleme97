@@ -9,6 +9,7 @@
 #include "ssd1306.h"
 #include <string.h>
 #include "ssd1306_font.h"
+#include <math.h>
 
 // Definição dos pinos usados no projeto
 #define MICROFONE_ADC_GPIO 28         // GPIO 28 atribuido ao microfone
@@ -30,12 +31,15 @@ const uint I2C_SCL = 15;              // Pino SCL do OLED
 #define DURACAO 3                     // Duração máxima da gravação em segundos
 #define TAMANHO_BUFFER (TAXA_AMOSTRAGEM * DURACAO) // Tamanho total do buffer de gravação
 
+volatile uint16_t ultima_amostra = 0;
+
+
 // Buffer de áudio
 uint16_t buffer_audio[TAMANHO_BUFFER];
 volatile uint buffer_index = 0;
 bool amostrando = false;
 bool aguardando_acao = true;
-float volume = 1.7f;                 // Fator de ganho do áudio reproduzido
+float volume = 1.55f;                 // Fator de ganho do áudio reproduzido
 uint32_t pwm_wrap = 0;
 
 // Instâncias do display
@@ -87,21 +91,30 @@ void configurar_pwm_saida() {
     gpio_set_function(BUZZER_GPIO, GPIO_FUNC_PWM);
     uint slice_num = pwm_gpio_to_slice_num(BUZZER_GPIO);
 
-    uint freq_pwm = 41000; // Frequência do PWM em Hz
-    uint sys_clk = clock_get_hz(clk_sys);
-    pwm_wrap = sys_clk / freq_pwm;
+    uint freq_pwm = 62000;                          // Define uma frequência de PWM alta (62 kHz) para minimizar ruído audível e melhorar fidelidade.
+    uint sys_clk = clock_get_hz(clk_sys);           // Obtém a frequência atual do clock do sistema
+    pwm_wrap = (sys_clk / freq_pwm)-1;              // Calcula o valor máximo do contador PWM (wrap) para obter a frequência desejada:
 
-    pwm_set_wrap(slice_num, pwm_wrap);
+    pwm_set_wrap(slice_num, pwm_wrap);              // Define duty inicial como 0 para evitar chiado
     pwm_set_clkdiv(slice_num, 1.0f);
+
+    pwm_set_gpio_level(BUZZER_GPIO, 0);             // PREVENÇÃO DO CHIADO
     pwm_set_enabled(slice_num, true);
 }
+
 
 // Desliga a saída PWM
 void desligar_pwm_saida() {
     uint slice_num = pwm_gpio_to_slice_num(BUZZER_GPIO);
-    pwm_set_gpio_level(BUZZER_GPIO, 0);
-    pwm_set_enabled(slice_num, false);
+
+    pwm_set_gpio_level(BUZZER_GPIO, 0);     // Zera o sinal PWM
+    pwm_set_enabled(slice_num, false);      // Desliga o PWM
+
+    gpio_set_function(BUZZER_GPIO, GPIO_FUNC_SIO); // Alterna pino para GPIO comum
+    gpio_set_dir(BUZZER_GPIO, GPIO_OUT);
+    gpio_put(BUZZER_GPIO, 0);               // Força nível baixo no pino
 }
+
 
 // Função chamada periodicamente para capturar uma amostra
 int64_t amostrar_callback(alarm_id_t id, void *user_data) {
@@ -109,9 +122,9 @@ int64_t amostrar_callback(alarm_id_t id, void *user_data) {
 
     if (buffer_index < TAMANHO_BUFFER) {
         uint16_t amostra = ler_microfone_adc();
-        buffer_audio[buffer_index] = amostra;
-        buffer_index++;
-        return 1000000 / TAXA_AMOSTRAGEM;  // Tempo até a próxima amostra (em microssegundos)
+        ultima_amostra = amostra;                       // <-- Atualiza a amostra mais recente
+        buffer_audio[buffer_index++] = amostra;
+        return 1000000 / TAXA_AMOSTRAGEM;               // Agenda próxima chamada com base na taxa de amostragem (ex: a cada 24.39 us para 41 kHz)
     } else {
         amostrando = false;
         return 0;
@@ -119,40 +132,39 @@ int64_t amostrar_callback(alarm_id_t id, void *user_data) {
 }
 
 // Reproduz o áudio com interpolacao linear entre amostras
-void reproduzir_buffer_pwm_interpolado(uint8_t passos_interpolacao) {
-    set_rgb(false, true, false); // AZUL
+void reproduzir_buffer_pwm_simples() {
+    set_rgb(false, true, false);        // LED azul: reprodução em andamento
     printf("Reproduzindo...\n");
 
-    configurar_pwm_saida();
+    configurar_pwm_saida();             // wrap e freq já definidos corretamente
 
-    for (int i = 0; i < TAMANHO_BUFFER - 1; i++) {
-        uint16_t amostra_atual = buffer_audio[i] * volume;
-        uint16_t amostra_proxima = buffer_audio[i + 1] * volume;
+    for (int i = 0; i < TAMANHO_BUFFER; i++) {
+        float amostra = buffer_audio[i] * volume;
+        if (amostra > 4095.0f) amostra = 4095.0f;
 
-        if(amostra_atual > 4095) amostra_atual = 4095;
-        if(amostra_proxima > 4095) amostra_proxima = 4095;
+        // Aplica compressão suave (normalizador dinâmico simples)
+        amostra = sqrtf(amostra) * sqrtf(4095.0f);
 
-        for (uint8_t passo = 0; passo < passos_interpolacao; passo++) {
-            float fator = (float)passo / passos_interpolacao;
-            float interpolado = amostra_atual + (amostra_proxima - amostra_atual) * fator;
+        // Mapeamento direto linear
+        uint16_t duty = (uint16_t)((amostra * pwm_wrap) / 4095.0f);
 
-            uint16_t duty = ((uint16_t)interpolado * pwm_wrap) / 4095;
-            pwm_set_gpio_level(BUZZER_GPIO, duty);
+        // Ignora pulsos muito curtos
+        if (duty < 3) duty = 0;
 
-            sleep_us((1000000 / TAXA_AMOSTRAGEM) / passos_interpolacao);
-        }
+        pwm_set_gpio_level(BUZZER_GPIO, duty);
+        sleep_us(1000000 / TAXA_AMOSTRAGEM);
     }
 
-    desligar_pwm_saida();
+    desligar_pwm_saida(); // GPIO resetado para 0
     set_rgb(false, false, false);
     printf("Reprodução concluída.\n");
-
 }
+
 
 // Função para aplicar debounce em botão
 bool botao_pressionado(uint gpio) {
     if (gpio_get(gpio) == 0) {           // Detecta pressionado (nível baixo)
-        sleep_ms(20);                    // Espera 20ms
+        sleep_ms(20);                    
         if (gpio_get(gpio) == 0) {       // Confirma que ainda está pressionado
             while (gpio_get(gpio) == 0); // Aguarda soltar o botão
             return true;
@@ -222,12 +234,14 @@ int main() {
 
             while (amostrando) {
                 // Captura a amostra e armazena no buffer
-                uint16_t amostra = ler_microfone_adc();
-                buffer_audio[buffer_index++] = amostra;
+               // uint16_t amostra = ler_microfone_adc();
+               // buffer_audio[buffer_index++] = amostra;
 
                 // Converte a amostra (0–4095) em altura de 0 a 64 pixels
-                int altura = (amostra * SCREEN_HEIGHT) / 4095;
+                // Converte ultima_amostra (0–4095) em altura de 0 a 64 pixels
+                int altura = (ultima_amostra * SCREEN_HEIGHT) / 4095;
                 if (altura > 64) altura = 64;
+
 
                 // Limpa tela e escreve "GRAVANDO!"
                 memset(ssd, 0, ssd1306_buffer_length);
@@ -265,7 +279,7 @@ int main() {
             ssd1306_draw_string(ssd, 0, 32, "  REPRODUZINDO! ");
             render_on_display(ssd, &frame_area);
 
-            reproduzir_buffer_pwm_interpolado(1);
+            reproduzir_buffer_pwm_simples();
             aguardando_acao = true;
         }
 
