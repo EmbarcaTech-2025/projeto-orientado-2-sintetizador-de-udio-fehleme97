@@ -39,7 +39,7 @@ uint16_t buffer_audio[TAMANHO_BUFFER];
 volatile uint buffer_index = 0;
 bool amostrando = false;
 bool aguardando_acao = true;
-float volume = 1.55f;                 // Fator de ganho do áudio reproduzido
+float volume = 1.60;                 // Fator de ganho do áudio reproduzido
 uint32_t pwm_wrap = 0;
 
 // Instâncias do display
@@ -91,7 +91,7 @@ void configurar_pwm_saida() {
     gpio_set_function(BUZZER_GPIO, GPIO_FUNC_PWM);
     uint slice_num = pwm_gpio_to_slice_num(BUZZER_GPIO);
 
-    uint freq_pwm = 62000;                          // Define uma frequência de PWM alta (62 kHz) para minimizar ruído audível e melhorar fidelidade.
+    uint freq_pwm = 55000;                          // Define uma frequência de PWM alta (62 kHz) para minimizar ruído audível e melhorar fidelidade.
     uint sys_clk = clock_get_hz(clk_sys);           // Obtém a frequência atual do clock do sistema
     pwm_wrap = (sys_clk / freq_pwm)-1;              // Calcula o valor máximo do contador PWM (wrap) para obter a frequência desejada:
 
