@@ -16,6 +16,13 @@ Este projeto implementa um sistema de captura e reprodução de áudio no BitDog
 - Visualização gráfica das amostras no display OLED.
 - Estrutura modular com separação entre captura, renderização e reprodução.
 
+# 🎬 VIDEO EXPLICATIVO
+
+LINK: 
+```
+https://youtu.be/oAQh0NYRnBo
+```
+
 # 🗂️ Estrutura do Projeto
 
 ```
